@@ -2,6 +2,7 @@ import os
 import re
 import socket
 import logging
+from datetime import datetime
 from typing import List, Dict, Any, Optional
 import httpx
 from bs4 import BeautifulSoup
@@ -9,10 +10,48 @@ from pydantic import BaseModel
 
 logger = logging.getLogger("gopro_backend")
 
+_SIZE_RE = re.compile(r"^\s*([\d.]+)\s*(B|KB|MB|GB|TB)\s*$", re.I)
+_SIZE_UNITS = {"B": 1, "KB": 1024, "MB": 1024 ** 2, "GB": 1024 ** 3, "TB": 1024 ** 4}
+_DATE_RE = re.compile(r"\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}")
+_DATE_FORMATS = [
+    "%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d",
+    "%d/%m/%Y %H:%M:%S", "%d/%m/%Y %H:%M", "%d/%m/%Y",
+    "%m/%d/%Y %H:%M:%S", "%m/%d/%Y %H:%M", "%m/%d/%Y",
+    "%d-%b-%Y %H:%M:%S", "%d-%b-%Y %H:%M", "%d-%b-%Y",
+]
+
+
+def parse_size_bytes(size_str: Optional[str]) -> Optional[int]:
+    """'123.4 MB' -> bytes (int), or None if unparseable."""
+    m = _SIZE_RE.match(size_str or "")
+    if not m:
+        return None
+    try:
+        return int(float(m.group(1)) * _SIZE_UNITS[m.group(2).upper()])
+    except ValueError:
+        return None
+
+
+def parse_date_ts(date_str: Optional[str]) -> Optional[float]:
+    """Best-effort parse of the listing date column into an epoch timestamp."""
+    if not date_str:
+        return None
+    text = date_str.strip()
+    for fmt in _DATE_FORMATS:
+        try:
+            return datetime.strptime(text, fmt).timestamp()
+        except ValueError:
+            continue
+    return None
+
+
 class MediaItem(BaseModel):
     name: str
     url: str
     size_str: Optional[str] = None
+    size_bytes: Optional[int] = None
+    date_str: Optional[str] = None
+    date_ts: Optional[float] = None
     directory: str
     thumbnail_url: Optional[str] = None
     lrv_url: Optional[str] = None
@@ -25,6 +64,7 @@ class CameraStatus(BaseModel):
     model: Optional[str] = "HERO5 Black"
     battery_level: Optional[int] = None
     recording: Optional[bool] = None
+    mode: Optional[str] = None
     raw_status: Optional[Dict[str, Any]] = None
 
 class GoProHero5:
@@ -60,7 +100,15 @@ class GoProHero5:
                 data = res.json()
                 status_dict = data.get("status", {})
                 is_recording = bool(status_dict.get("10", 0) == 1)
-                battery = status_dict.get("2", None)
+                # key "70" is battery percentage; key "1" is a 0-4 gauge (4 = full)
+                battery = status_dict.get("70")
+                if battery is None:
+                    lvl = status_dict.get("1")
+                    if isinstance(lvl, (int, float)):
+                        battery = int(lvl / 4 * 100)
+                if isinstance(battery, (int, float)):
+                    battery = int(battery) if 0 <= battery <= 100 else None
+                mode = {0: "video", 1: "photo", 2: "multishot"}.get(status_dict.get("43"))
                 model_name = status_dict.get("30", "HERO5 Black")
                 return CameraStatus(
                     connected=True,
@@ -68,6 +116,7 @@ class GoProHero5:
                     model=model_name,
                     recording=is_recording,
                     battery_level=battery,
+                    mode=mode,
                     raw_status=data
                 )
         except Exception as e:
@@ -89,19 +138,22 @@ class GoProHero5:
 
     async def set_mode(self, mode: str) -> bool:
         """
-        Set primary camera mode:
-        video (0), photo (1), multishot/burst/timelapse (2)
+        Set primary camera mode. HERO5 requires both mode and sub_mode params:
+        video (0/0), photo (1/1), multishot (2/0), timelapse (2/3).
         """
         mode_map = {
-            "video": 0,
-            "photo": 1,
-            "multishot": 2,
-            "timelapse": 2
+            "video": (0, 0),
+            "photo": (1, 1),
+            "multishot": (2, 0),
+            "timelapse": (2, 3),
         }
-        val = mode_map.get(mode.lower())
-        if val is None:
+        pair = mode_map.get(mode.lower())
+        if pair is None:
             raise ValueError(f"Unknown mode: {mode}. Expected: {list(mode_map.keys())}")
-        res = await self.control_client.get(f"/gp/gpControl/command/sub_mode?mode={val}")
+        m, sm = pair
+        res = await self.control_client.get(
+            f"/gp/gpControl/command/sub_mode?mode={m}&sub_mode={sm}"
+        )
         return res.status_code == 200
 
     async def locate(self, enable: bool = True) -> bool:
@@ -166,19 +218,31 @@ class GoProHero5:
                 rows = soup.find_all("tr")
                 # Pre-scan folder files to detect .THM (thumbnails) and .LRV (low-res preview)
                 all_filenames = set()
-                file_sizes = {}
+                file_meta: Dict[str, tuple] = {}
                 for row in rows:
                     tds = row.find_all("td")
-                    if len(tds) >= 3:
-                        a_tag = tds[0].find("a")
-                        if a_tag and a_tag.get("href"):
-                            fname = a_tag.text.strip()
-                            size_str = tds[2].text.strip()
-                            all_filenames.add(fname)
-                            file_sizes[fname] = size_str
+                    if len(tds) < 2:
+                        continue
+                    a_tag = tds[0].find("a")
+                    if not (a_tag and a_tag.get("href")):
+                        continue
+                    fname = a_tag.text.strip()
+                    size_str = None
+                    date_str = None
+                    # Column order varies by firmware; detect size/date by shape.
+                    for td in tds[1:]:
+                        text = td.text.strip()
+                        if size_str is None and _SIZE_RE.match(text):
+                            size_str = text
+                        elif date_str is None and _DATE_RE.search(text):
+                            date_str = text
+                    all_filenames.add(fname)
+                    file_meta[fname] = (size_str, date_str)
 
-                for fname, size_str in file_sizes.items():
+                for fname, (size_str, date_str) in file_meta.items():
                     lower = fname.lower()
+                    size_bytes = parse_size_bytes(size_str)
+                    date_ts = parse_date_ts(date_str)
                     if lower.endswith(".mp4"):
                         base_prefix = os.path.splitext(fname)[0]
                         # GoPro pairs videos with .THM (jpeg thumbnail) and .LRV (low-res video)
@@ -191,6 +255,9 @@ class GoProHero5:
                             name=fname,
                             url=f"{self.media_base_url}/videos/DCIM/{folder}/{fname}",
                             size_str=size_str,
+                            size_bytes=size_bytes,
+                            date_str=date_str,
+                            date_ts=date_ts,
                             directory=folder,
                             thumbnail_url=thumb_url,
                             lrv_url=lrv_url,
@@ -202,6 +269,9 @@ class GoProHero5:
                             name=fname,
                             url=f"{self.media_base_url}/videos/DCIM/{folder}/{fname}",
                             size_str=size_str,
+                            size_bytes=size_bytes,
+                            date_str=date_str,
+                            date_ts=date_ts,
                             directory=folder,
                             thumbnail_url=f"{self.media_base_url}/videos/DCIM/{folder}/{fname}",
                             is_video=False,

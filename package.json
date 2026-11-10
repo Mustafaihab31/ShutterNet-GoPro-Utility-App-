@@ -1,0 +1,14 @@
+{
+  "name": "shutternet",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "backend": "python -m uvicorn main:app --host 127.0.0.1 --port 8000",
+    "dev": "tauri dev",
+    "build": "tauri build"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.9.4"
+  }
+}

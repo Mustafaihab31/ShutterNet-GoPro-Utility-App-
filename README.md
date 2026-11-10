@@ -1,6 +1,6 @@
-# ShutterNet Backend (GoPro HERO5 Black Desktop Replacement)
+# ShutterNet (GoPro HERO5 Black Desktop Replacement)
 
-A Python/FastAPI backend designed to communicate with the GoPro HERO5 Black over Wi-Fi.
+A GoPro HERO5 Black control center: Python/FastAPI backend + Tauri desktop app with a Studio Sidebar dashboard.
 
 ## Architecture & How GoPro HERO5 Wi-Fi Works
 
@@ -8,6 +8,7 @@ A Python/FastAPI backend designed to communicate with the GoPro HERO5 Black over
 2. **Commands & Status**: GoPro exposes a lightweight HTTP control server at `http://10.5.5.9/gp/gpControl/...`.
 3. **Media Browsing**: Media list is fetched via `/gp/gpMediaList` or HTTP directory browsing `/videos/DCIM/`.
 4. **Live Streaming**: Triggered via control endpoint + UDP keep-alive packets sent to `10.5.5.9:8554`. The GoPro broadcasts an MPEG-TS stream readable locally at `udp://@0.0.0.0:8554` (e.g. via VLC, FFmpeg, or converted to WebRTC/HLS/WebSocket for frontend).
+
 
 ---
 
@@ -25,6 +26,24 @@ uvicorn main:app --reload --port 8000
 
 Interactive Swagger API docs will be accessible at:
 [http://localhost:8000/docs](http://localhost:8000/docs)
+
+---
+
+## Desktop App (Tauri)
+
+The dashboard (`index.html`, warm-graphite "Studio Sidebar" layout) is wrapped in a Tauri v2 window. In dev mode Tauri boots the FastAPI backend for you and points the webview at it. **Note: crate downloads need a normal internet connection — the GoPro Wi-Fi has none.**
+
+```bash
+npm install          # one-time: Tauri CLI
+npm run dev          # starts uvicorn + opens the ShutterNet window
+npm run build        # bundles a Windows installer into src-tauri/target/release/bundle/
+```
+
+If you prefer running pieces manually while iterating on the UI:
+
+```bash
+python -m uvicorn main:app --port 8000   # backend + dashboard at http://localhost:8000
+```
 
 ---
 
