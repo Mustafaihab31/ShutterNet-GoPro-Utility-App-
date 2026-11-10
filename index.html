@@ -191,7 +191,7 @@
         </button>
         <button class="secondary" onclick="setMode('video')">📹 Video Mode</button>
         <button class="secondary" onclick="setMode('photo')">📷 Photo Mode</button>
-        <button class="secondary" onclick="locateCamera()">🔔 Beep (Locate)</button>
+        <button id="btn-locate" class="secondary" onclick="toggleLocate()">🔔 Beep (Locate)</button>
         
         <div style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
             <label style="font-size: 13px; color: var(--text-dim);">Folder:</label>
@@ -269,12 +269,25 @@
             }
         }
 
-        async function locateCamera() {
+        let isBeeping = false;
+        async function toggleLocate() {
+            const btn = document.getElementById("btn-locate");
+            isBeeping = !isBeeping;
             try {
-                await fetch(`${API_BASE}/api/control/locate?enable=true`, { method: "POST" });
-                showToast("Beeping GoPro!");
+                await fetch(`${API_BASE}/api/control/locate?enable=${isBeeping}`, { method: "POST" });
+                if (isBeeping) {
+                    btn.innerText = "🔕 Stop Beep";
+                    btn.style.backgroundColor = "#eab308";
+                    btn.style.color = "#000";
+                    showToast("GoPro beeping started!");
+                } else {
+                    btn.innerText = "🔔 Beep (Locate)";
+                    btn.style.backgroundColor = "#475569";
+                    btn.style.color = "#fff";
+                    showToast("GoPro beeping stopped!");
+                }
             } catch (err) {
-                showToast("Failed to locate", true);
+                showToast("Failed to toggle beep", true);
             }
         }
 
