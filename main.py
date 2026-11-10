@@ -6,7 +6,7 @@ from typing import List, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 import httpx
 
 from gopro import GoProHero5, MediaItem, CameraStatus
@@ -54,6 +54,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+@app.get("/")
+async def serve_dashboard():
+    """Serve visual Quik-replacement dashboard."""
+    return FileResponse("index.html")
 
 @app.get("/api/health")
 async def health_check():
